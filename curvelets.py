@@ -2,13 +2,35 @@ import numpy as np
 import functools
 import math 
 class directional_filter_bank():
+    """ Class that perform a directional filter bank, which means one step of the curvelet transform for one scale.
+        The procedure was taken from the article the uniform discrete curvelet transform.
+    """
     def _compute_decimation_factor_from_n_angles(self, n_angles):
+        """ Fonction that compute the decimation factor i.e. the factor that will divide horizontally the vertical angular
+            window, and divide vertically the horizontal angular window.
+
+        Args:
+            n_angles (Integer): number of angular window per direction (one direction means horizontal or vertical)
+
+        Returns:
+            Integer: the decimation factor that will divide horizontally  the vertical angular window, and divide vertically the
+                     horizontal angular window
+        """
         self.decimation_factor = 1
         while self.decimation_factor * 2 < n_angles:
             self.decimation_factor *= 2
         return self.decimation_factor
     
     def T_angle(self,x,y):
+        """ Elementwise function that, given x and y pixel coordinates return T(theta(x,y)) with T given in the article
+
+        Args:
+            x (array): coordinate along x
+            y (array): coordinate along y
+
+        Returns:
+            [array]: same dimension of x and y. For each element xi, yi of x and y returns T(theta(xi,yi)).
+        """
         result = np.zeros(x.shape)
         result = np.where(x >= abs(y), y/(x+ 1e-18), result)
         result = np.where(y >= abs(x), 2 - x/(y+ 1e-18), result)
@@ -21,6 +43,16 @@ class directional_filter_bank():
         return result
     
     def _get_frame_functions(self, n_angles, nu_a = 0.3, nu_b = 0.2):
+        """ Function that setup the frame function given in the article. The name are the same
+
+        Args:
+            n_angles (Integer):  number of angular window per direction (one direction means horizontal or vertical)
+            nu_a (float, optional): smoothing factor for concentric windows. Defaults to 0.3.
+            nu_b (float, optional): smoothing factor for angular windows. Defaults to 0.2.
+
+        Returns:
+            function, function: the windows function corresponding to the low pass filter and the angular filters 
+        """
         poly = lambda t: np.polyval([- 5/32, 0, 21/32, 0, -35/32, 0, 35/32,1/2], t)
         beta_squared = lambda t: np.where(np.abs(t) < 1, poly(t), (t > 0).astype(float))
         safe_beta_squared = lambda t: np.clip(beta_squared(t), 0, 1) # when rounding error makes values out of [0,1] 
@@ -49,6 +81,16 @@ class directional_filter_bank():
         return self.w0, self.u_tilda
     
     def _compute_angular_filters(self,size_image, n_angles, border):
+        """ Function that precompute the filters that will be used for the filter bank
+
+        Args:
+            size_image (Integer): the size of the image that will be given as input to the transform
+            n_angles (Integer): number of angular window per direction (one direction means horizontal or vertical)
+            border (str): "null" or "toric". Depending on the hypothesis made on extrapolation outside borders.
+
+        Returns:
+            array: a 3D dimensional array, which is astack of images each corresponding to one filters.
+        """
         graduation = np.arange(- size_image // 2, size_image // 2)
         x,y = np.meshgrid(graduation, graduation, indexing = 'ij')
         x = x / (size_image // 2)
@@ -74,7 +116,16 @@ class directional_filter_bank():
         self.filters = np.concatenate( ( self.angular_filters, self.lowpass_filter ), axis = 0 )
         return self.filters
     
-    def __init__(self, size_image, n_angles, nu_a = 0.3, nu_b = 0.2, border="null"):  
+    def __init__(self, size_image, n_angles, nu_a = 0.3, nu_b = 0.2, border="null"):
+        """ init the transform with its hyper parameters
+        Args:
+            size_image (Integer): the size of the image that will be given as input to the transform
+            n_angles (Integer): number of angular window per direction (one direction means horizontal or vertical)
+            nu_a (float, optional): smoothing factor for concentric windows. Defaults to 0.3.
+            nu_b (float, optional): smoothing factor for angular windows. Defaults to 0.2.
+            border (str): "null" or "toric". Depending on the hypothesis made on extrapolation outside borders.
+        """
+      
         self.n_angles = n_angles
         self.nu_a = nu_a
         self.nu_b = nu_b
@@ -85,6 +136,17 @@ class directional_filter_bank():
 
         
     def _decimation(self,arr, coef, axis):
+        """ Function that performs a time/spatial decimation in the frequency domain
+
+        Args:
+            arr (array): input data
+            coef (Integer): decimation factor
+            axis (Integer): axis that determines the direction of decimation
+
+        Returns:
+            array: the new decimated array
+        """
+
         return functools.reduce( lambda a,b : a+b, 
                                  np.split( arr  , 
                                            coef , 
@@ -93,6 +155,19 @@ class directional_filter_bank():
                                )
         
     def __call__(self,image):
+        """ Function that performs the directional filter bank of the image as it is described in the article. This function can be applied 
+            to a batch of images. This batch can have any shape. In this case the outputs will bet a set of batch too. 
+
+        Args:
+            image (array): input data of dimension (n1 x n2 x ... ) x n x n. n1 x ... are the dimension of the batch. and n is the size of the square image
+
+        Returns:
+            tuple : Three arrays:
+                        - (n1 x n2 x ... ) x n_angle x 2 x (n/2) x (n/2) : the low frequencies of the directional filter bank
+                        - (n1 x n2 x ... ) x n_angle x 2 x nk x (n/2) : the vertical frequencies of the directional filter bank
+                        - (n1 x n2 x ... ) x n_angle x 2 x (n/2) x nk : the horizontal frequencies of the directional filter bank
+        """
+
         fft = np.fft.fft2(image, norm = "ortho")
         ndims_image = len(fft.shape)
         ndims_filter = 3
@@ -143,6 +218,18 @@ class directional_filter_bank():
         return (lowfreq_filtered, vdirectional_filtered, hdirectional_filtered)
     
     def reconstruction(self, lowfreq_filtered, vdirectional_filtered, hdirectional_filtered):
+        """ Function that performs the inverse directional filter bank of a transform as it is described in the article. This function can be applied 
+            to a batch of transforms. This batch can have any shape. In this case the outputs will bet a set of batch too. 
+
+        Args:
+            lowfreq_filtered ([array]): (n1 x n2 x ... ) x 1 x 1 x (n/2) x (n/2) : the low frequencies of the directional filter bank
+            vdirectional_filtered ([array]): (n1 x n2 x ... ) x n_angle x 2 x nk x (n/2) : the vertical frequencies of the directional filter bank
+            hdirectional_filtered ([array]): (n1 x n2 x ... ) x n_angle x 2 x (n/2) x nk : the horizontal frequencies of the directional filter bank
+
+        Returns:
+            [array]: reconstructed image from the transform of size (n1 x n2 x ... ) x n x n 
+        """
+                 
         ndims_image = len(lowfreq_filtered.shape) - 2
         axis_filter = ndims_image - 2
         axis_real_imag = axis_filter + 1
@@ -186,7 +273,17 @@ class directional_filter_bank():
         return np.fft.ifft2(hf_filtered + lowfreq_filtered, norm = "ortho").real
  
 class curvelet_transform():
+    """ Class that compute the curvelet transform. The procedure was taken from the article the uniform discrete curvelet transform.
+    """
     def __init__(self, size_image, nums_angles, nu_a = 0.3, nu_b = 0.2):
+        """ init the transform with its hyper parameters
+        Args:
+            size_image (Integer): the size of the image that will be given as input to the transform
+            nums_angles (List[Integer]): number of angular window per direction (one direction means horizontal or vertical)
+                                         given for each scale, from the coarsest to the finest
+            nu_a (float, optional): smoothing factor for concentric windows. Defaults to 0.3.
+            nu_b (float, optional): smoothing factor for angular windows. Defaults to 0.2.
+        """
         self._directional_filter_banks = []
         border = "toric"
         size = size_image
@@ -198,12 +295,33 @@ class curvelet_transform():
         
     
     def __call__(self, image):
+        """
+        Compute the curvelet transform from the image
+        Args:
+            image (array):  a batch of images of size (n1 x n2 x ... ) x n x n 
+
+        Returns:
+            [List(array)]: the list of elements of the transform u0, the lowest frequencies, and u_js, the angular windows, were j is the scale, 
+                           s the direction. each of its element have a size of (n1 x n2 x ... ) x na x nb x nc x nd  with na, nb, nc and nd vary
+                           from one element ton another. 
+        """
         result = [np.expand_dims(image, axis = (-4,-3))]
         for dir_filt_bank in self._directional_filter_banks:
             result = list(dir_filt_bank(np.squeeze(result[0], axis = (-4,-3)))) + result[1:]
         return result
     
     def inverse(self, transform):
+        """
+            Compute the inverse curvelet transform
+        Args:
+            transform (List(array)): The orignal transform. Must not be build from scratch. usually a result of the __call__ method.
+                                     the list of elements of the transform u0, the lowest frequencies, and u_js, the angular windows, were j is the scale, 
+                                     s the direction. each of its element have a size of (n1 x n2 x ... ) x na x nb x nc x nd  with na, nb, nc and nd vary
+                                     from one element ton another. (n1 x n2 x ... ) is the size of the batch.
+
+        Returns:
+            image (array):  a batch of images of size (n1 x n2 x ... ) x n x n
+        """
         result = transform
         for dir_filt_bank in reversed(self._directional_filter_banks):
             result = [dir_filt_bank.reconstruction(result[0], result[1], result[2])] + result[3:]
